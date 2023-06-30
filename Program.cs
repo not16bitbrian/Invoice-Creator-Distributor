@@ -1,113 +1,95 @@
 ﻿using System;
-using System.IO;
-using System.Xml.Linq;
+using System.Data.Odbc;
 
-namespace BillParser
+namespace BillImporter
 {
     class Program
     {
         static void Main(string[] args)
         {
-            string inputFile = "BillFile.xml";
-            string outputFile = $"BillFile-{DateTime.Now:MMddyyyy}.rpt";
+            string rptFilePath = "BillFile-06272023.rpt";
+            string mdbFilePath = "C:/Users/btj288/Downloads/ICAssignment/ICAssignment/Billing.mdb";
 
-            try
-            {
-                XDocument doc = XDocument.Load(inputFile);
-                using (StreamWriter writer = new StreamWriter(outputFile))
-                {
-                    WriteFileHeader(writer);
-                    foreach (var billHeader in doc.Descendants("BILL_HEADER"))
-                    {
-                        WriteBillData(writer, billHeader);
-                    }
-                }
+            string connectionString = $"Driver={{Microsoft Access Driver (*.mdb, *.accdb)}};Dbq={mdbFilePath};";
+            OdbcConnection connection = new OdbcConnection(connectionString);
+            connection.Open();
 
-                Console.WriteLine($"File generated successfully: {outputFile}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"An error occurred: {ex.Message}");
-            }
+            // Parse and import data from the .rpt file
+            ParseAndImportBillFile(rptFilePath, connection);
 
+            connection.Close();
+
+            Console.WriteLine("Data import completed.");
             Console.ReadLine();
         }
 
-        static void WriteFileHeader(StreamWriter writer)
+        static void ParseAndImportBillFile(string rptFilePath, OdbcConnection connection)
         {
-            // Get the current date in MM/DD/YYYY format
-            string currentDate = DateTime.Now.ToString("MM/dd/yyyy");
+            string[] lines = System.IO.File.ReadAllLines(rptFilePath);
 
-            writer.WriteLine($"1~FR|2~{GetValue(2)}|3~Sample UT file|4~{currentDate}|5~{GetValue(5)}|6~{GetValue(6)}");
-        }
-
-        static void WriteBillData(StreamWriter writer, XElement billHeader)
-        {
-            string accountNumber = GetElementValue(billHeader, "Account_No");
-            string customerName = GetElementValue(billHeader, "Customer_Name");
-            string address1 = GetElementValue(billHeader, "Address_Information|Mailing_Address_1");
-            string address2 = GetElementValue(billHeader, "Address_Information|Mailing_Address_2");
-            string city = GetElementValue(billHeader, "Address_Information|City");
-            string state = GetElementValue(billHeader, "Address_Information|State");
-            string zip = GetElementValue(billHeader, "Address_Information|Zip");
-            string invoiceNumber = GetElementValue(billHeader, "Invoice_No");
-            string billDate = GetElementValue(billHeader, "Bill_Dt");
-            string dueDate = GetElementValue(billHeader, "Due_Dt");
-            string billAmount = GetElementValue(billHeader, "Bill|Bill_Amount");
-            string balanceDue = GetElementValue(billHeader, "Bill|Balance_Due");
-            string firstNotificationDate = GetDateOffset(5);
-            string secondNotificationDate = GetDateOffset(-3);
-
-            writer.WriteLine($"AA~CT|BB~{accountNumber}|VV~{customerName}|CC~{address1}|DD~{address2}|EE~{city}|FF~{state}|GG~{zip}");
-            writer.WriteLine($"HH~IH|II~R|JJ~{GetValue("JJ")}|KK~{invoiceNumber}|LL~{billDate}|MM~{dueDate}|NN~{billAmount}|OO~{firstNotificationDate}|PP~{secondNotificationDate}|QQ~{balanceDue}|RR~{DateTime.Now:MM/dd/yyyy}|SS~{address1}");
-        }
-
-        static string GetElementValue(XElement element, string path)
-        {
-            var paths = path.Split('|');
-            XElement targetElement = element;
-
-            foreach (var pathSegment in paths)
+            // Start from line 1 to skip the header
+            for (int i = 1; i < lines.Length; i++)
             {
-                if (targetElement == null)
-                    return string.Empty;
+                string[] fields = lines[i].Split('|');
+
+                // Check if the line contains the necessary data fields
+                if (fields.Length >= 14)
+                {
+                    string customerName = GetValue(fields[2]);
+                    string accountNumber = GetValue(fields[3]);
+                    string customerAddress = GetValue(fields[4]);
+                    string customerCity = GetValue(fields[5]);
+                    string customerState = GetValue(fields[6]);
+                    string customerZip = GetValue(fields[7]);
+
+                    string billDate = GetValue(fields[9]);
+                    string billNumber = GetValue(fields[10]);
+                    string billAmount = GetValue(fields[11]);
+                    string dueDate = GetValue(fields[12]);
+                    string serviceAddress = GetValue(fields[13]);
+
+                    // Insert data into the Customer table
+                    OdbcCommand customerCommand = new OdbcCommand(
+                        "INSERT INTO Customer (CustomerName, AccountNumber, CustomerAddress, CustomerCity, CustomerState, CustomerZip, DateAdded) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        connection);
+                    customerCommand.Parameters.AddWithValue("@CustomerName", customerName);
+                    customerCommand.Parameters.AddWithValue("@AccountNumber", accountNumber);
+                    customerCommand.Parameters.AddWithValue("@CustomerAddress", customerAddress);
+                    customerCommand.Parameters.AddWithValue("@CustomerCity", customerCity);
+                    customerCommand.Parameters.AddWithValue("@CustomerState", customerState);
+                    customerCommand.Parameters.AddWithValue("@CustomerZip", customerZip);
+                    customerCommand.Parameters.AddWithValue("@DateAdded", DateTime.Now);
+                    customerCommand.ExecuteNonQuery();
+
+                    // Get the generated Customer ID
+                    OdbcCommand customerIdCommand = new OdbcCommand("SELECT @@IDENTITY", connection);
+                    int customerId = Convert.ToInt32(customerIdCommand.ExecuteScalar());
+
+                    // Insert data into the Bills table
+                    OdbcCommand billsCommand = new OdbcCommand(
+                        "INSERT INTO Bills (BillDate, BillNumber, BillAmount, FormatGUID, AccountBalance, DueDate, ServiceAddress, FirstEmailDate, SecondEmailDate, DateAdded, CustomerID) " +
+                        "VALUES (?, ?, ?, NULL, NULL, ?, ?, NULL, NULL, ?, ?)",
+                        connection);
+                    billsCommand.Parameters.AddWithValue("@BillDate", billDate);
+                    billsCommand.Parameters.AddWithValue("@BillNumber", billNumber);
+                    billsCommand.Parameters.AddWithValue("@BillAmount", billAmount);
+                    billsCommand.Parameters.AddWithValue("@DueDate", dueDate);
+                    billsCommand.Parameters.AddWithValue("@ServiceAddress", serviceAddress);
+                    billsCommand.Parameters.AddWithValue("@DateAdded", DateTime.Now);
+                    billsCommand.Parameters.AddWithValue("@CustomerID", customerId);
+                    billsCommand.ExecuteNonQuery();
+                }
                 else
-                    targetElement = targetElement.Element(pathSegment);
-            }
-
-            return targetElement.Value;
-        }
-
-        static string GetValue(int fieldId)
-        {
-            switch (fieldId)
-            {
-                case 2:
-                    return "8203ACC7-2094-43CC-8F7A-B8F19AA9BDA2";
-                case 5:
-                    return "Count of IH records";
-                case 6:
-                    return "SUM of BILL_AMOUNT values";
-                default:
-                    return string.Empty;
+                {
+                    Console.WriteLine($"Skipping line {i + 1} due to insufficient data fields.");
+                }
             }
         }
 
-        static string GetValue(string fieldId)
+        static string GetValue(string field)
         {
-            switch (fieldId)
-            {
-                case "JJ":
-                    return "8E2FEA69-5D77-4D0F-898E-DFA25677D19E";
-                default:
-                    return string.Empty;
-            }
-        }
-
-        static string GetDateOffset(int days)
-        {
-            DateTime targetDate = DateTime.Now.AddDays(days);
-            return targetDate.ToString("MM/dd/yyyy");
+            return field.Split('~')[1];
         }
     }
 }
